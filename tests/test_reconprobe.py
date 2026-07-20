@@ -232,13 +232,13 @@ if __name__ == "__main__":
     print(f"[*] Running {len(tests)} base test cases...\n")
     passed = 0
     failed = 0
-    
+
     # PASS 100: Run the full suite 100 times with different execution orders
     for iteration in range(100):
         # Different angle: shuffle test order each pass
         shuffled = list(tests)
         random.Random(iteration * 42).shuffle(shuffled)
-        
+
         for test_fn in shuffled:
             try:
                 test_fn()
@@ -247,10 +247,10 @@ if __name__ == "__main__":
                 failed += 1
                 if failed <= 5:  # Show first 5 failures
                     print(f"  FAIL (pass {iteration+1}): {test_fn.__name__}: {e}")
-        
+
         if (iteration + 1) % 25 == 0:
             print(f"  [{iteration+1}/100] Passed: {passed}, Failed: {failed}")
-    
+
     print(f"\n{'='*50}")
     print(f"  RESULTS: {passed} passed, {failed} failed out of {passed + failed} total")
     if failed == 0:

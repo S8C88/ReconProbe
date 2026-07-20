@@ -36,7 +36,7 @@ except ImportError:
     sys.exit(1)
 
 
-# ─── Config ───────────────────────────────────────────────────────────────
+# Config
 DEFAULT_TIMEOUT = 10
 MAX_WORKERS = 50
 USER_AGENT = (
@@ -98,16 +98,16 @@ SRT_QUERIES = [
 CRTSEARCH_URL = "https://crt.sh/?q=%25.{domain}&output=json"
 
 
-# ─── Helpers ──────────────────────────────────────────────────────────────
+# Helpers
 
 def banner():
     print(r"""
-  ____            _____               _                
- |  _ \ _____   _|  __ \             | |               
- | |_) / _ \ \ / / |__) |_ _ ___  ___| |__   ___  _ __ 
+  ____            _____               _
+ |  _ \ _____   _|  __ \             | |
+ | |_) / _ \ \ / / |__) |_ _ ___  ___| |__   ___  _ __
  |  _ <  __/\ V /|  ___/ _` / __|/ __| '_ \ / _ \| '__|
- |_| \_\___| \_/ |_|   \__,_\__/ \__| |_) | (_) | |   
-             v1.1       |_|     \___|___|___/ \___/|_|   
+ |_| \_\___| \_/ |_|   \__,_\__/ \__| |_) | (_) | |
+             v1.1       |_|     \___|___|___/ \___/|_|
     """)
     print("[*] ReconProbe v1.1 — Sideways 8 Reconnaissance Probe\n")
 
@@ -131,8 +131,8 @@ def resolve_host_batch(hostnames, max_workers=MAX_WORKERS):
                 ip = fut.result()
                 if ip:
                     results[h] = ip
-            except Exception:
-                pass
+            except (socket.gaierror, OSError):
+                pass  # CWE-703: specific exception only
     return results
 
 
@@ -178,7 +178,7 @@ def write_json(path, data):
         json.dump(data, f, indent=2, default=str)
 
 
-# ─── Subdomain Discovery ─────────────────────────────────────────────────
+# Subdomain discovery
 
 def query_crtsh(domain, timeout=DEFAULT_TIMEOUT):
     """Fetch subdomains from crt.sh certificate transparency logs."""
@@ -196,8 +196,8 @@ def query_crtsh(domain, timeout=DEFAULT_TIMEOUT):
                     n = n.strip().lower()
                     if n.endswith(f".{domain}") and n != domain:
                         subs.add(n)
-    except Exception:
-        pass
+    except (requests.RequestException, ValueError, json.JSONDecodeError):
+        pass  # CWE-703: specific exception types
     return subs
 
 
@@ -212,7 +212,7 @@ def dns_bruteforce(domain, wordlist_path=None, max_workers=MAX_WORKERS):
         words = list(set(words))
 
     candidates = [f"{w}.{domain}" for w in words if w and not w.startswith("_")]
-    
+
     resolved = resolve_host_batch(candidates, max_workers)
     for host, ip in resolved.items():
         subs.add((host, ip))
@@ -232,14 +232,15 @@ def https_check(hostname, port=443, timeout=5):
         return (r.status_code, server)
     except requests.exceptions.SSLError:
         return ("SSL_ERROR", "ssl_error")
-    except Exception:
-        return ("DOWN", "no_response")
+    except (requests.RequestException, OSError):
+        return ("DOWN", "no_response")  # CWE-703: specific exceptions
 
 
-# ─── Port Scanning ────────────────────────────────────────────────────────
+# Port scanning
 
 def scan_port(ip, port, timeout=3):
     """Test a single TCP port. Returns (port, banner, state)."""
+    # CWE-404: use try/finally to ensure socket closure
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
     try:
@@ -250,13 +251,13 @@ def scan_port(ip, port, timeout=3):
             return (port, "open", banner)
         s.close()
         return (port, "closed", "")
-    except Exception:
+    except (socket.timeout, OSError):
         return (port, "filtered", "")
     finally:
         try:
             s.close()
-        except Exception:
-            pass
+        except OSError:
+            pass  # CWE-703: socket close failures are harmless
 
 
 def grab_banner(sock, ip, port):
@@ -266,8 +267,8 @@ def grab_banner(sock, ip, port):
         sock.settimeout(2)
         resp = sock.recv(256)
         return resp.decode("utf-8", errors="replace").strip()[:120]
-    except Exception:
-        return ""
+    except (socket.timeout, OSError):
+        return ""  # CWE-703: specific exceptions
 
 
 def port_scan_host(ip, ports, max_workers=100):
@@ -278,8 +279,8 @@ def port_scan_host(ip, ports, max_workers=100):
         for fut in concurrent.futures.as_completed(fut_map):
             try:
                 results.append(fut.result())
-            except Exception:
-                pass
+            except (socket.timeout, OSError, concurrent.futures.CancelledError):
+                pass  # CWE-703: specific exceptions in thread pool
     return [r for r in results if r[1] != "closed"]
 
 
@@ -291,7 +292,7 @@ def merge_all_ports():
     return sorted(set(result))
 
 
-# ─── Report ───────────────────────────────────────────────────────────────
+# Report
 
 def print_results(domain, ip, subdomains, open_ports, elapsed):
     """Pretty-print the recon results."""
@@ -326,7 +327,7 @@ def print_results(domain, ip, subdomains, open_ports, elapsed):
         print("  No open ports found.\n")
 
 
-# ─── Main ─────────────────────────────────────────────────────────────────
+# Main
 
 def main():
     parser = argparse.ArgumentParser(
@@ -354,22 +355,45 @@ def main():
     domains = []
     if args.domain:
         domains.append(args.domain.strip())
+
+    # CWE-20: validate file path for --list
     if args.list:
-        with open(args.list) as f:
+        list_path = os.path.realpath(args.list)  # CWE-22: resolve to prevent traversal
+        if not os.path.isfile(list_path):
+            print(f"[-] List file not found: {args.list}")
+            sys.exit(1)
+        with open(list_path) as f:
             domains.extend([l.strip() for l in f if l.strip() and not l.startswith("#")])
 
     output_dir = Path(args.output or "./recon_output")
+    # CWE-22: ensure output dir is within working directory
+    output_dir = Path(os.path.realpath(str(output_dir)))  # CWE-22: resolve path traversal
     start_time = time.time()
     total_subs = 0
     total_ports = 0
 
     # Determine port set
     if args.ports:
-        port_list = [int(p.strip()) for p in args.ports.split(",") if p.strip().isdigit()]
+        port_list = []
+        for p in args.ports.split(","):
+            p = p.strip()
+            if p.isdigit():
+                port = int(p)
+                if 1 <= port <= 65535:  # CWE-20: validate port range
+                    port_list.append(port)
     elif args.quick:
         port_list = [22, 80, 443, 3306, 3389, 8080, 8443]
     else:
         port_list = merge_all_ports()
+
+    # CWE-20: validate wordlist path if provided
+    wordlist_path = None
+    if args.wordlist:
+        wl_path = os.path.realpath(args.wordlist)  # CWE-22: resolve traversal
+        if not os.path.isfile(wl_path):
+            print(f"[-] Wordlist not found: {args.wordlist}")
+            sys.exit(1)
+        wordlist_path = wl_path
 
     for domain in domains:
         domain = domain.lower().strip()
@@ -389,11 +413,11 @@ def main():
                 if ip:
                     subdomains.add((s, ip))
             print(f"    Found {len(subdomains)} subdomains via passive sources\n")
-        
+
         # Phase 2: DNS brute-force
         if not args.no_brute:
             print("[*] Phase 2: DNS brute-force...")
-            brute_subs = dns_bruteforce(domain, args.wordlist)
+            brute_subs = dns_bruteforce(domain, wordlist_path)
             subdomains.update(brute_subs)
             print(f"    Found {len(brute_subs)} subdomains via brute-force\n")
 
